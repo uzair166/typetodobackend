@@ -1,99 +1,166 @@
 import express, { Router, Request, Response } from 'express';
-import Todo, { ITodo } from '../models/Todo';
+import {
+  CreateToDoPayload,
+  EditToDoPayload,
+  ReorderToDoPayload,
+  UserTodoList,
+} from '../models/userTodoList'; // Import the model
+import mongoose from 'mongoose';
 
 const router = Router();
 
-// Get all todos for the authenticated user
-router.get('/', async (req: Request, res: Response) => {
+// Helper function to get userId (can be expanded based on your auth system)
+const getUserId = (req: any): string => {
+  // Assume we get userId from some form of authentication (e.g., JWT, session)
+  return req.headers['user-id']; // Modify as per your auth system
+};
+
+// Route to get all to-dos for the authenticated user
+router.get('/', (async (req: Request, res: Response) => {
+  const userId = getUserId(req);
+
   try {
-    const userId = req.headers['user-id'] as string;
-    const todos = await Todo.find({ userId });
-    res.json(todos);
-  } catch (err) {
-    // Cast 'err' to 'Error' to access the 'message' property
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
+    // Find the user's to-do list
+    const userTodoList = await UserTodoList.findOne({ userId });
 
-// Add a new todo
-router.post('/', async (req: Request, res: Response) => {
-  try {
-    const userId = req.headers['user-id'] as string;
-    const { text } = req.body;
-
-    const hashtags = (text.match(/#\w+/g) || []).map((tag: string) =>
-      tag.slice(1),
-    );
-
-    const newTodo = new Todo({
-      userId,
-      text: text.trim(),
-      completed: false,
-      hashtags,
-    });
-
-    const savedTodo = await newTodo.save();
-    res.json(savedTodo);
-  } catch (err) {
-    // Cast 'err' to 'Error' to access the 'message' property
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// Update a todo
-router.put('/:id', async (req: Request, res: Response) => {
-  try {
-    const userId = req.headers['user-id'] as string;
-    const { id } = req.params;
-    const updates = req.body;
-
-    const todo = await Todo.findOneAndUpdate({ _id: id, userId }, updates, {
-      new: true,
-    });
-    res.json(todo);
-  } catch (err) {
-    // Cast 'err' to 'Error' to access the 'message' property
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// Delete a todo
-router.delete('/:id', async (req: Request, res: Response) => {
-  try {
-    const userId = req.headers['user-id'] as string;
-    const { id } = req.params;
-
-    await Todo.findOneAndDelete({ _id: id, userId });
-    res.json({ message: 'Todo deleted' });
-  } catch (err) {
-    // Cast 'err' to 'Error' to access the 'message' property
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-router.post('/reorder', (async (req: Request, res: Response) => {
-  try {
-    const userId = req.headers['user-id'] as string;
-    const { newOrder } = req.body;
-
-    // Validate that newOrder contains all the user's todo IDs
-    const userTodos = await Todo.find({ userId });
-    const userTodoIds = userTodos.map((todo: ITodo) => todo._id.toString());
-
-    if (!newOrder.every((id: string) => userTodoIds.includes(id))) {
-      return res.status(400).json({ error: 'Invalid todo IDs in new order' });
+    // If the user's to-do list doesn't exist, return an empty list
+    if (!userTodoList) {
+      return res.json({ success: true, todos: [] });
     }
 
-    // Update the order of todos
-    await Promise.all(
-      newOrder.map((id: string, index: number) =>
-        Todo.findByIdAndUpdate(id, { $set: { order: index } }),
-      ),
-    );
+    // Return the to-do list
+    res.json({ success: true, todos: userTodoList.todos });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ error: 'Failed to fetch to-dos' });
+  }
+}) as express.RequestHandler);
 
-    res.json({ message: 'Todos reordered successfully' });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
+// Route to create a new to-do item
+router.post('/', async (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  const { text, tags = [] }: CreateToDoPayload = req.body;
+
+  try {
+    // Find the user's to-do list
+    let userTodoList = await UserTodoList.findOne({ userId });
+
+    // If no list exists, create one
+    if (!userTodoList) {
+      userTodoList = new UserTodoList({ userId, todos: [] });
+    }
+
+    // Add new to-do item to the list
+    const newToDo = {
+      todoId: new mongoose.Types.ObjectId().toString(), // Generate a new ObjectId for todoId
+      text,
+      tags,
+      completed: false,
+      order: userTodoList.todos.length, // Set the order to be last
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    userTodoList.todos.push(newToDo);
+    await userTodoList.save();
+
+    res.status(201).json({ success: true, todo: newToDo });
+  } catch (error) {
+    console.log(error);
+
+    res.status(500).json({ error: 'Failed to create to-do' });
+  }
+});
+
+// Route to edit/complete a to-do item
+router.put('/:todoId', (async (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  const { todoId } = req.params;
+  const { text, completed, tags }: EditToDoPayload = req.body;
+
+  try {
+    const userTodoList = await UserTodoList.findOne({ userId });
+    if (!userTodoList) return res.status(404).json({ error: 'User not found' });
+
+    const todo = userTodoList.todos.find(
+      (todo) => todo.todoId.toString() === todoId,
+    );
+    if (!todo) return res.status(404).json({ error: 'To-do not found' });
+
+    if (text) todo.text = text;
+    if (completed !== undefined) todo.completed = completed;
+    if (tags) todo.tags = tags;
+
+    todo.updatedAt = new Date();
+    await userTodoList.save();
+
+    res.json({ success: true, todo });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to edit to-do' });
+  }
+}) as express.RequestHandler);
+
+// Route to reorder to-do items
+router.put('/reorder/:todoId', (async (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  const { todoId } = req.params;
+  const { newPosition }: ReorderToDoPayload = req.body;
+
+  try {
+    const userTodoList = await UserTodoList.findOne({ userId });
+    if (!userTodoList) return res.status(404).json({ error: 'User not found' });
+
+    const todoIndex = userTodoList.todos.findIndex(
+      (todo) => todo.todoId.toString() === todoId,
+    );
+    if (todoIndex === -1)
+      return res.status(404).json({ error: 'To-do not found' });
+
+    // Remove the to-do from the current position
+    const [todo] = userTodoList.todos.splice(todoIndex, 1);
+
+    // Insert it into the new position
+    userTodoList.todos.splice(newPosition, 0, todo);
+
+    await userTodoList.save();
+
+    res.json({ success: true, todos: userTodoList.todos });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to reorder to-dos' });
+  }
+}) as express.RequestHandler);
+
+router.delete('/:todoId', (async (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  const { todoId } = req.params;
+
+  try {
+    const userTodoList = await UserTodoList.findOne({ userId });
+    if (!userTodoList) return res.status(404).json({ error: 'User not found' });
+
+    const todoIndex = userTodoList.todos.findIndex(
+      (todo) => todo.todoId.toString() === todoId,
+    );
+    if (todoIndex === -1)
+      return res.status(404).json({ error: 'To-do not found' });
+
+    // Remove the to-do item
+    userTodoList.todos.splice(todoIndex, 1);
+
+    // Recalculate the order of remaining todos
+    userTodoList.todos.forEach((todo, index) => {
+      todo.order = index;
+    });
+
+    await userTodoList.save();
+
+    res.json({
+      success: true,
+      message: 'To-do deleted successfully',
+      todos: userTodoList.todos,
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete to-do' });
   }
 }) as express.RequestHandler);
 
