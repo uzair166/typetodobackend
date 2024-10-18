@@ -16,6 +16,7 @@ const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:3000',
   'https://typetodofrontend-5otc.vercel.app',
+  'https://typetodofrontend.vercel.app',
   // Add more origins as needed
 ];
 
